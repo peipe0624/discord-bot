@@ -1,47 +1,66 @@
+# ===== Render無料対策：ダミーWebサーバー =====
 from flask import Flask
 from threading import Thread
 
-app = Flask('')
+app = Flask(__name__)
 
-@app.route('/')
+@app.route("/")
 def home():
     return "bot is alive"
 
 def run_web():
-    app.run(host='0.0.0.0', port=10000)
+    app.run(host="0.0.0.0", port=10000)
 
 def keep_alive():
     t = Thread(target=run_web)
     t.start()
 
+
+# ===== Discord Bot 本体 =====
 import discord
 from discord import app_commands
+import aiohttp
 import os
 
-TOKEN = os.environ.get("DISCORD_TOKEN")
+# 環境変数（RenderのEnvironmentに設定する）
+TOKEN = os.environ["DISCORD_TOKEN"]
+APP_ID = int(os.environ["DISCORD_APP_ID"])
+API_URL = os.environ["API_URL"]  # 例: https://xxxxx.onrender.com/ask
 
-client = discord.Client(intents=discord.Intents.default())
+intents = discord.Intents.default()
+client = discord.Client(intents=intents, application_id=APP_ID)
 tree = app_commands.CommandTree(client)
+
 
 @client.event
 async def on_ready():
-    await tree.sync()
-    print("Bot起動完了")
+    try:
+        synced = await tree.sync()
+        print(f"Bot起動完了 / synced {len(synced)} commands")
+    except Exception as e:
+        print("tree.sync failed:", repr(e))
+
 
 @tree.command(name="ask", description="攻略用AIに質問")
 async def ask(interaction: discord.Interaction, question: str):
-
-    # ★まず3秒以内に必ず返事（超重要）
+    # ★3秒以内に必ず返す（超重要）
     await interaction.response.defer(thinking=True)
 
     try:
-        r = requests.post(API_URL, json={"question": question}, timeout=120)
-        answer = r.json()["answer"]
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                API_URL,
+                json={"question": question},
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                data = await resp.json()
+        answer = data.get("answer", "回答が取得できませんでした。")
     except Exception as e:
-        answer = "AIサーバーに接続できませんでした。しばらく待ってから再度お試しください。"
+        answer = f"AIサーバーに接続できませんでした。しばらく待ってください。\n({e})"
 
-    # ★あとから本当の返事を送る
     await interaction.followup.send(answer)
 
+
+# ===== 起動 =====
 keep_alive()
 client.run(TOKEN)
