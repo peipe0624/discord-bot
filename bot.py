@@ -1,66 +1,55 @@
-# ===== Render無料対策：ダミーWebサーバー =====
-from flask import Flask
-from threading import Thread
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "bot is alive"
-
-def run_web():
-    app.run(host="0.0.0.0", port=10000)
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
-
-
-# ===== Discord Bot 本体 =====
-import discord
-from discord import app_commands
-import aiohttp
 import os
+import asyncio
+from aiohttp import web
+from dotenv import load_dotenv
+import discord
+from discord.ext import commands
 
-# 環境変数（RenderのEnvironmentに設定する）
-TOKEN = os.environ["DISCORD_TOKEN"]
-APP_ID = int(os.environ["DISCORD_APP_ID"])
-API_URL = os.environ["API_URL"]  # 例: https://xxxxx.onrender.com/ask
+load_dotenv()
 
+# ===== Discord bot =====
 intents = discord.Intents.default()
-client = discord.Client(intents=intents, application_id=APP_ID)
-tree = app_commands.CommandTree(client)
+intents.message_content = True  # !ping を使うなら必要（Developer Portal側もON済み前提）
 
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-@client.event
+@bot.event
 async def on_ready():
-    try:
-        synced = await tree.sync()
-        print(f"Bot起動完了 / synced {len(synced)} commands")
-    except Exception as e:
-        print("tree.sync failed:", repr(e))
+    print(f"ログイン成功: {bot.user}")
 
+@bot.command()
+async def ping(ctx):
+    await ctx.send("Pong! ボットは正常に動いています！")
 
-@tree.command(name="ask", description="攻略用AIに質問")
-async def ask(interaction: discord.Interaction, question: str):
-    # ★3秒以内に必ず返す（超重要）
-    await interaction.response.defer(thinking=True)
+# ===== Web server (for Render Web Service health check) =====
+async def handle_root(request):
+    return web.Response(text="ok")
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                API_URL,
-                json={"question": question},
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                data = await resp.json()
-        answer = data.get("answer", "回答が取得できませんでした。")
-    except Exception as e:
-        answer = f"AIサーバーに接続できませんでした。しばらく待ってください。\n({e})"
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_root)
 
-    await interaction.followup.send(answer)
+    runner = web.AppRunner(app)
+    await runner.setup()
 
+    port = int(os.environ.get("PORT", "8080"))  # RenderはPORTを環境変数で渡す
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
 
-# ===== 起動 =====
-keep_alive()
-client.run(TOKEN)
+    print(f"Web server started on 0.0.0.0:{port}")
+    return runner
+
+async def main():
+    # Webを先に起動（Renderがここを見に来る）
+    runner = await start_web_server()
+
+    # Discord bot を起動
+    token = os.environ["DISCORD_BOT_TOKEN"]
+    async with bot:
+        await bot.start(token)
+
+    # botが落ちた場合はwebも閉じる（通常ここには来ない）
+    await runner.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())
